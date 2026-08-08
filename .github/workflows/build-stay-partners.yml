@@ -1,0 +1,62 @@
+# Build and push the Stay Partners custom LibreChat image to GHCR.
+# Triggers on every push to the stay-partners branch.
+# Image: ghcr.io/spera-law-group-llc/librechat:stay-partners-latest
+#
+# Required one-time setup (Spera-Law-Group-LLC org → Settings → Actions → General):
+#   - Allow GitHub Actions to create and approve pull requests: ✓
+#   - Workflow permissions: Read and write permissions ✓
+# No PAT needed; GITHUB_TOKEN with packages:write is sufficient for org GHCR.
+
+name: Build — Stay Partners
+
+on:
+  push:
+    branches: [stay-partners]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: spera-law-group-llc/librechat
+
+jobs:
+  build-and-push:
+    name: Build and push Docker image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=stay-partners-latest
+            type=sha,prefix=stay-partners-
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            NODE_VERSION=20
