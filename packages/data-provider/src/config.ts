@@ -77,22 +77,6 @@ export enum SettingsViews {
 /** Validates any FileSources value — use for file metadata, DB records, and upload routing. */
 export const fileSourceSchema = z.nativeEnum(FileSources);
 
-/**
- * `allowedAddresses` is an SSRF exemption list scoped to private IP space.
- * Validate at config-load time:
- *  - Reject URLs, paths, CIDR ranges, bare host/IP forms, and whitespace.
- *  - Require `host:port` or `[ipv6]:port` entries so an exemption is scoped
- *    to one service port instead of every port on a private host.
- *  - Reject IPv4 literals that fall outside the private/loopback/link-local
- *    ranges. Public IPs are never SSRF targets, so listing one has no
- *    defensive purpose and must not silently grant trust.
- *  - Hostnames pass through; their resolved IP is checked at runtime by
- *    `resolveHostnameSSRF` and only a private resolved IP is meaningful.
- *
- * Mirrors a minimal subset of `isPrivateIP` from `@librechat/api` to avoid a
- * circular package dependency. The runtime helper is the authoritative check;
- * this refinement is a UX guardrail.
- */
 function isPrivateIPv4Literal(value: string): boolean {
   const match = value.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (!match) {
@@ -103,35 +87,27 @@ function isPrivateIPv4Literal(value: string): boolean {
   if (a === 169 && b === 254) return true;
   if (a === 172 && b >= 16 && b <= 31) return true;
   if (a === 192 && b === 168) return true;
-  if (a === 192 && b === 0 && c === 0) return true; // RFC 5736 IETF protocol assignments
+  if (a === 192 && b === 0 && c === 0) return true;
   if (a === 100 && b >= 64 && b <= 127) return true;
   if (a === 198 && (b === 18 || b === 19)) return true;
-  if (a >= 224) return true; // multicast/reserved
+  if (a >= 224) return true;
   return false;
 }
 
 function isPrivateIPv6Literal(value: string): boolean {
   if (!value.includes(':')) return false;
   if (value === '::1' || value === '::') return true;
-  if (value.startsWith('fc') || value.startsWith('fd')) return true; // fc00::/7
-  // fe80::/10 — first hextet 0xfe80–0xfebf
+  if (value.startsWith('fc') || value.startsWith('fd')) return true;
   const firstHextet = value.split(':', 1)[0];
   if (/^[0-9a-f]{1,4}$/.test(firstHextet ?? '')) {
     const hextet = parseInt(firstHextet, 16);
     if ((hextet & 0xffc0) === 0xfe80) return true;
   }
-  // 4-in-6: ::ffff:A.B.C.D
   const mappedMatch = value.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
   if (mappedMatch) return isPrivateIPv4Literal(mappedMatch[1]);
   return false;
 }
 
-/**
- * Mirrors the allowedAddresses parser in `@librechat/api`'s auth helpers.
- * Kept as a local copy because the data-provider package cannot import from
- * `@librechat/api` without creating a circular dependency. Keep the two
- * implementations in sync.
- */
 function normalizePort(port: unknown): string {
   if (typeof port !== 'string' && typeof port !== 'number') return '';
   const portString = String(port).trim();
@@ -172,7 +148,7 @@ const allowedAddressEntrySchema = z
       const isIPv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.test(stripped);
       const isIPv6 = !isIPv4 && stripped.includes(':');
       if (!isIPv4 && !isIPv6) {
-        return true; // hostname — checked at runtime via DNS
+        return true;
       }
       return isIPv4 ? isPrivateIPv4Literal(stripped) : isPrivateIPv6Literal(stripped);
     },
@@ -184,7 +160,6 @@ const allowedAddressEntrySchema = z
 
 export const allowedAddressesSchema = z.array(allowedAddressEntrySchema).optional();
 
-/** Storage backend strategies only — use for config fields that set where files are stored. */
 const FILE_STORAGE_BACKENDS = [
   FileSources.local,
   FileSources.firebase,
@@ -346,12 +321,6 @@ const skillSyncTokenReferenceSchema = z
     message: 'must be an environment variable reference like ${GITHUB_SKILLS_TOKEN}',
   });
 
-/**
- * Tenant that owns the skills mirrored from a source. When set, the sync runner
- * executes that source's database writes inside the tenant's async context so
- * synced skills are created, listed, and shared within the tenant under strict
- * tenant isolation. Mirrors the request tenant-id contract: no reserved system id.
- */
 const skillSyncTenantIdSchema = z
   .string()
   .max(128)
@@ -432,14 +401,11 @@ export const skillSyncConfigSchema = z
 export type SkillSyncConfig = z.infer<typeof skillSyncConfigSchema>;
 export type SkillSyncGitHubSourceConfig = z.infer<typeof skillSyncGitHubSourceSchema>;
 
-// Helper type to extract the shape of the Zod object schema
 type SchemaShape<T> = T extends z.ZodObject<infer U> ? U : never;
 
-// Helper type to determine the default value or undefined based on whether the field has a default
 type DefaultValue<T> =
   T extends z.ZodDefault<z.ZodTypeAny> ? ReturnType<T['_def']['defaultValue']> : undefined;
 
-// Extract default values or undefined from the schema shape
 type ExtractDefaults<T> = {
   [P in keyof T]: DefaultValue<T[P]>;
 };
@@ -454,13 +420,11 @@ export function getSchemaDefaults<Schema extends z.AnyZodObject>(
   const shape = schema.shape;
   const entries = Object.entries(shape).map(([key, value]) => {
     if (value instanceof z.ZodDefault) {
-      // Extract default value if it exists
       return [key, value._def.defaultValue()];
     }
     return [key, undefined];
   });
 
-  // Create the object with the right types
   return Object.fromEntries(entries) as ExtractDefaults<SchemaShape<Schema>>;
 }
 
@@ -485,7 +449,6 @@ const paramValueSchema: z.ZodType<unknown> = z.lazy(() =>
   ]),
 );
 
-/** Validates addParams while keeping web_search aligned with current runtime boolean handling. */
 const addParamsSchema: z.ZodType<Record<string, unknown>> = z
   .record(z.string(), paramValueSchema)
   .superRefine((params, ctx) => {
@@ -527,8 +490,6 @@ export const azureGroupConfigsSchema = z.array(azureGroupSchema).min(1);
 export type TAzureGroup = z.infer<typeof azureGroupSchema>;
 export type TAzureGroups = z.infer<typeof azureGroupConfigsSchema>;
 export type TAzureModelMapSchema = {
-  // deploymentName?: string;
-  // version?: string;
   group: string;
 };
 
@@ -586,14 +547,6 @@ export const defaultAssistantsVersion = {
 export const baseEndpointSchema = z.object({
   streamRate: z.number().optional(),
   baseURL: z.string().optional(),
-  /**
-   * Custom request headers forwarded to the provider on every request. Values
-   * support the same placeholder resolution as custom endpoints — env vars
-   * (`${VAR}`), user fields (`{{LIBRECHAT_USER_*}}`), and request-body fields
-   * (`{{LIBRECHAT_BODY_CONVERSATIONID}}`). Primarily for routing built-in
-   * providers through an AI gateway / reverse proxy that consumes metadata
-   * headers (provider-native request shaping is preserved).
-   */
   headers: z.record(z.string()).optional(),
   titlePrompt: z.string().optional(),
   titleModel: z.string().optional(),
@@ -603,14 +556,7 @@ export const baseEndpointSchema = z.object({
     .optional(),
   titleEndpoint: z.string().optional(),
   titlePromptTemplate: z.string().optional(),
-  /**
-   * When conversation titles are generated. `immediate` (default) generates the
-   * title as soon as the request is made, in parallel with the response, from the
-   * user's first message. `final` defers generation until the full response
-   * completes (legacy behavior).
-   */
   titleTiming: z.union([z.literal('immediate'), z.literal('final')]).optional(),
-  /** Maximum characters allowed in a single tool result before truncation. */
   maxToolResultChars: z.number().positive().optional(),
 });
 
@@ -642,7 +588,6 @@ const modelItemSchema = z.union([
 
 export const assistantEndpointSchema = baseEndpointSchema.merge(
   z.object({
-    /* assistants specific */
     disableBuilder: z.boolean().optional(),
     pollIntervalMs: z.number().optional(),
     timeoutMs: z.number().optional(),
@@ -661,7 +606,6 @@ export const assistantEndpointSchema = baseEndpointSchema.merge(
         Capabilities.actions,
         Capabilities.tools,
       ]),
-    /* general */
     apiKey: z.string().optional(),
     models: z
       .object({
@@ -677,8 +621,6 @@ export const assistantEndpointSchema = baseEndpointSchema.merge(
 export type TAssistantEndpoint = z.infer<typeof assistantEndpointSchema>;
 
 export const defaultAgentCapabilities = [
-  // Commented as requires latest Code Interpreter API
-  // AgentCapabilities.programmatic_tools,
   AgentCapabilities.deferred_tools,
   AgentCapabilities.execute_code,
   AgentCapabilities.file_search,
@@ -756,37 +698,9 @@ const remoteApiSchema = z.object({
   auth: remoteApiAuthSchema.optional(),
 });
 
-/**
- * Permission mode applied to a tool call. Mirrors `@librechat/agents`'s
- * `ToolPolicyMode` 1:1.
- *
- * - `default`: ask the user about anything not explicitly allowed (default-on).
- * - `dontAsk`: deny anything not explicitly allowed (headless / API-key flows).
- * - `bypass`: auto-approve everything that isn't explicitly denied
- *   (the user-facing "stop asking me" toggle).
- *
- * Subagents inherit the parent's mode; this is enforced by the SDK and not
- * overridable per-subagent.
- */
 export const toolApprovalModeSchema = z.enum(['default', 'dontAsk', 'bypass']);
 export type ToolApprovalMode = z.infer<typeof toolApprovalModeSchema>;
 
-/**
- * Per-endpoint tool-approval policy.
- *
- * Shape mirrors `@librechat/agents`'s `ToolPolicyConfig` so the host can map it
- * directly into `createToolPolicyHook(config)`. The SDK does the evaluation
- * (`deny → bypass → allow → ask → dontAsk → fallthrough(ask)`); this config
- * just describes the surface.
- *
- * Conventions:
- * - All list entries are matched as globs (`*`). Use `mcp:server:*` to scope
- *   a rule to every tool from a single MCP server.
- * - `deny` always wins, including under `bypass`.
- * - `enabled: false` is a LibreChat-only kill switch that disables the entire
- *   HITL machinery for this endpoint (no checkpointer, no hooks, no prompts).
- *   This is admin-level; users toggle prompting via `mode: 'bypass'` instead.
- */
 export const toolApprovalPolicySchema = z
   .object({
     enabled: z.boolean().optional(),
@@ -794,45 +708,19 @@ export const toolApprovalPolicySchema = z
     allow: z.array(z.string()).optional(),
     deny: z.array(z.string()).optional(),
     ask: z.array(z.string()).optional(),
-    /** Optional reason template surfaced in the prompt; `{tool}` is interpolated. */
     reason: z.string().optional(),
   })
   .optional();
 
 export type TToolApprovalPolicy = z.infer<typeof toolApprovalPolicySchema>;
 
-/**
- * Durable checkpointer backing human-in-the-loop resume.
- *
- * When `toolApproval.enabled` is true, a run that pauses for review suspends its
- * LangGraph state to a checkpoint; resuming rebuilds that state on a *fresh* `Run`
- * — possibly on a different replica, or the same worker after a restart. That only
- * works if the checkpoint outlives the original request, so HITL needs a durable
- * saver, not the SDK's process-local `MemorySaver` fallback.
- *
- * Defaults are zero-config: with `toolApproval.enabled` on and no `checkpointer`
- * block, LibreChat persists checkpoints to its primary MongoDB, so resume works
- * across replicas out of the box.
- *
- * - `type: 'mongo'` (default) — persist to the app database; survives restarts and
- *   resolves on any replica. A TTL index reclaims runs that are never resolved.
- * - `type: 'memory'` — process-local only. Paused runs do NOT survive a restart and
- *   can only be resolved on the originating worker. Single-process / dev only.
- */
 export const checkpointerTypeSchema = z.enum(['mongo', 'memory']);
 export type TCheckpointerType = z.infer<typeof checkpointerTypeSchema>;
 
 export const checkpointerSchema = z
   .object({
     type: checkpointerTypeSchema.optional(),
-    /**
-     * Approval window, in seconds: how long a paused run waits for a decision
-     * before it is reclaimed. Drives both the Mongo TTL index on checkpoints and
-     * the pending-action expiry, keeping the two layers in lockstep. Defaults to
-     * 86400 (24h). Raise it for longer review windows.
-     */
     ttl: z.number().int().positive().optional(),
-    /** Advanced: override the Mongo collection names used for checkpoints. */
     checkpointCollectionName: z.string().optional(),
     checkpointWritesCollectionName: z.string().optional(),
   })
@@ -844,7 +732,6 @@ export const agentsEndpointSchema = baseEndpointSchema
   .omit({ baseURL: true })
   .merge(
     z.object({
-      /* agents specific */
       recursionLimit: z.number().optional(),
       disableBuilder: z.boolean().optional().default(false),
       maxRecursionLimit: z.number().optional(),
@@ -862,10 +749,7 @@ export const agentsEndpointSchema = baseEndpointSchema
         })
         .optional(),
       remoteApi: remoteApiSchema.optional(),
-      /** Human-in-the-loop tool approval policy. Off by default. */
       toolApproval: toolApprovalPolicySchema,
-      /** Durable checkpointer backing HITL resume. Defaults to the app's MongoDB
-       *  when `toolApproval.enabled` is set; ignored otherwise. */
       checkpointer: checkpointerSchema,
     }),
   )
@@ -932,13 +816,6 @@ export const endpointSchema = baseEndpointSchema.merge(
     }),
     iconURL: z.string().optional(),
     modelDisplayLabel: z.string().optional(),
-    /**
-     * Forces the endpoint to use a provider's native client / request format
-     * instead of the default OpenAI-compatible client. Currently supports
-     * `anthropic`, for endpoints that speak the Anthropic `/v1/messages` API
-     * (Anthropic itself or Anthropic-compatible gateways). Omit for
-     * OpenAI-compatible endpoints.
-     */
     provider: z.literal(EModelEndpoint.anthropic).optional(),
     headers: z.record(z.string()).optional(),
     addParams: addParamsSchema.optional(),
@@ -948,9 +825,7 @@ export const endpointSchema = baseEndpointSchema.merge(
         defaultParamsEndpoint: z.string().default('custom'),
         reasoningFormat: eReasoningParameterFormatSchema.optional(),
         reasoningKey: eReasoningResponseKeySchema.optional(),
-        /** Replays `reasoning_content` within a run's tool-call turns (e.g. Xiaomi MiMo, Kimi). */
         includeReasoningContent: z.boolean().optional(),
-        /** Also reconstructs `reasoning_content` from persisted history across turns (implies `includeReasoningContent`). */
         includeReasoningHistory: z.boolean().optional(),
         paramDefinitions: z.array(paramDefinitionSchema).optional(),
       })
@@ -958,7 +833,6 @@ export const endpointSchema = baseEndpointSchema.merge(
       .optional(),
     directEndpoint: z.boolean().optional(),
     titleMessageRole: z.enum(['system', 'user', 'assistant']).optional(),
-    /** Static per-model token config: context window and per-million-token rates */
     tokenConfig: z
       .record(
         z.object({
@@ -997,35 +871,20 @@ export const azureEndpointSchema = z
 export type TAzureConfig = Omit<z.infer<typeof azureEndpointSchema>, 'groups'> &
   TAzureConfigValidationResult;
 
-/**
- * Vertex AI model configuration - similar to Azure model config
- * Allows specifying deployment name for each model
- */
 export const vertexModelConfigSchema = z
   .object({
-    /** The actual model ID/deployment name used by Vertex AI API */
     deploymentName: z.string().optional(),
   })
   .or(z.boolean());
 
 export type TVertexModelConfig = z.infer<typeof vertexModelConfigSchema>;
 
-/**
- * Vertex AI configuration schema for Anthropic models served via Google Cloud Vertex AI.
- * Similar to Azure configuration, this allows running Anthropic models through Google Cloud.
- */
 export const vertexAISchema = z.object({
-  /** Enable Vertex AI mode for Anthropic (defaults to true when vertex config is present) */
   enabled: z.boolean().optional(),
-  /** Google Cloud Project ID (optional - auto-detected from service key file if not provided) */
   projectId: z.string().optional(),
-  /** Vertex AI region (e.g., 'us-east5', 'europe-west1') */
   region: z.string().default('us-east5'),
-  /** Optional: Path to service account key file */
   serviceKeyFile: z.string().optional(),
-  /** Optional: Default deployment name for all models (can be overridden per model) */
   deploymentName: z.string().optional(),
-  /** Optional: Available models - can be string array or object with deploymentName mapping */
   models: z.union([z.array(z.string()), z.record(z.string(), vertexModelConfigSchema)]).optional(),
 });
 
@@ -1033,9 +892,6 @@ export type TVertexAISchema = z.infer<typeof vertexAISchema>;
 
 export type TVertexModelMap = Record<string, string>;
 
-/**
- * Validated Vertex AI configuration result
- */
 export type TVertexAIConfig = TVertexAISchema & {
   isValid: boolean;
   errors: string[];
@@ -1043,15 +899,9 @@ export type TVertexAIConfig = TVertexAISchema & {
   modelDeploymentMap?: TVertexModelMap;
 };
 
-/**
- * Anthropic endpoint schema with optional Vertex AI configuration.
- * Extends baseEndpointSchema with Vertex AI support.
- */
 export const anthropicEndpointSchema = baseEndpointSchema.merge(
   z.object({
-    /** Vertex AI configuration for running Anthropic models on Google Cloud */
     vertex: vertexAISchema.optional(),
-    /** Optional: List of available models */
     models: z.array(z.string()).optional(),
   }),
 );
@@ -1132,7 +982,6 @@ const speechTab = z
       .optional()
       .or(
         z.object({
-          /** Keep in sync with STTProviders enum (defined below — cannot reference due to eval order) */
           engineSTT: z.enum(['openai', 'azureOpenAI']).optional(),
           languageSTT: z.string().optional(),
           autoTranscribeAudio: z.boolean().optional(),
@@ -1146,7 +995,6 @@ const speechTab = z
       .optional()
       .or(
         z.object({
-          /** Keep in sync with TTSProviders enum (defined below — cannot reference due to eval order) */
           engineTTS: z.enum(['openai', 'azureOpenAI', 'elevenlabs', 'localai']).optional(),
           voice: z.string().optional(),
           languageTTS: z.string().optional(),
@@ -1217,7 +1065,6 @@ const termsOfServiceSchema = z.object({
 
 export type TTermsOfService = z.infer<typeof termsOfServiceSchema>;
 
-// Schema for localized string (either simple string or language-keyed object)
 const localizedStringSchema = z.union([z.string(), z.record(z.string())]);
 export type LocalizedString = z.infer<typeof localizedStringSchema>;
 
@@ -1229,6 +1076,7 @@ const mcpServersSchema = z
     share: z.boolean().optional(),
     public: z.boolean().optional(),
     configureObo: z.boolean().optional(),
+    showPanel: z.boolean().optional(),
     trustCheckbox: z
       .object({
         label: localizedStringSchema.optional(),
@@ -1313,7 +1161,6 @@ export const interfaceSchema = z
       .optional(),
     fileSearch: z.boolean().optional(),
     fileCitations: z.boolean().optional(),
-    /** Tool keys (and `'mcp'` or an MCP server name) pinned to the prompt bar by default */
     defaultPinnedTools: z.array(z.string()).optional(),
     buildInfo: z.boolean().optional(),
     remoteAgents: z
@@ -1468,11 +1315,8 @@ export type TStartupConfig = {
   openidAutoRedirect: boolean;
   samlLabel: string;
   samlImageUrl: string;
-  /** LDAP Auth Configuration */
   ldap?: {
-    /** LDAP enabled */
     enabled: boolean;
-    /** Whether LDAP uses username vs. email */
     username?: boolean;
   };
   serverDomain: string;
@@ -1488,11 +1332,7 @@ export type TStartupConfig = {
   modelDescriptions?: Record<string, Record<string, string>>;
   sharedLinksEnabled: boolean;
   publicSharedLinksEnabled: boolean;
-  /** Whether shared links snapshot conversation files (gates the per-link "share files" checkbox). */
   sharedLinksSnapshotFilesEnabled?: boolean;
-  /** Effective default timing for when conversation titles become fetchable.
-   * `immediate` = fetch in parallel with the active stream (default);
-   * `final` = fetch only after the stream completes (legacy). */
   titleGenerationTiming?: 'immediate' | 'final';
   analyticsGtmId?: string;
   rum?: TRumConfig;
@@ -1882,10 +1722,6 @@ export const configSchema = z.object({
     .optional(),
 });
 
-/**
- * Recursively makes all properties of T optional, including nested objects.
- * Handles arrays, primitives, functions, and Date objects correctly.
- */
 export type DeepPartial<T> = T extends (infer U)[]
   ? DeepPartial<U>[]
   : T extends ReadonlyArray<infer U>
@@ -2031,8 +1867,6 @@ export const bedrockModels = [
   'anthropic.claude-3-5-sonnet-20241022-v2:0',
   'anthropic.claude-3-5-sonnet-20240620-v1:0',
   'anthropic.claude-3-5-haiku-20241022-v1:0',
-  // 'cohere.command-text-v14', // no conversation history
-  // 'cohere.command-light-text-v14', // no conversation history
   'cohere.command-r-v1:0',
   'cohere.command-r-plus-v1:0',
   'meta.llama2-13b-chat-v1',
@@ -2048,8 +1882,6 @@ export const bedrockModels = [
   'mistral.mistral-large-2407-v1:0',
   'mistral.mistral-small-2402-v1:0',
   'ai21.jamba-instruct-v1:0',
-  // 'ai21.j2-mid-v1', // no streaming
-  // 'ai21.j2-ultra-v1', no conversation history
   'amazon.titan-text-lite-v1',
   'amazon.titan-text-express-v1',
   'amazon.titan-text-premier-v1:0',
@@ -2058,18 +1890,14 @@ export const bedrockModels = [
 export const defaultModels = {
   [EModelEndpoint.azureAssistants]: sharedOpenAIModels,
   [EModelEndpoint.assistants]: [...sharedOpenAIModels, 'chatgpt-4o-latest'],
-  [EModelEndpoint.agents]: sharedOpenAIModels, // TODO: Add agent models (agentsModels)
+  [EModelEndpoint.agents]: sharedOpenAIModels,
   [EModelEndpoint.google]: [
-    // Gemini 3.5 Models
     'gemini-3.5-flash',
-    // Gemini 3.1 Models
     'gemini-3.1-pro-preview',
     'gemini-3.1-pro-preview-customtools',
     'gemini-3.1-flash-lite-preview',
-    // Gemini 3 Models
     'gemini-3-pro-preview',
     'gemini-3-flash-preview',
-    // Gemini 2.5 Models
     'gemini-2.5-pro',
     'gemini-2.5-flash',
     'gemini-2.5-flash-lite',
@@ -2095,7 +1923,7 @@ export const initialModelsConfig: TModelsConfig = {
   initial: [],
   [EModelEndpoint.openAI]: openAIModels,
   [EModelEndpoint.assistants]: openAIModels.filter(fitlerAssistantModels),
-  [EModelEndpoint.agents]: openAIModels, // TODO: Add agent models (agentsModels)
+  [EModelEndpoint.agents]: openAIModels,
   [EModelEndpoint.azureOpenAI]: openAIModels,
   [EModelEndpoint.google]: defaultModels[EModelEndpoint.google],
   [EModelEndpoint.anthropic]: defaultModels[EModelEndpoint.anthropic],
@@ -2203,23 +2031,11 @@ export const imageGenTools = new Set([
   'gemini_image_gen',
 ]);
 
-/**
- * Enum for collections using infinite queries
- */
 export enum InfiniteCollections {
-  /**
-   * Collection for Prompt Groups
-   */
   PROMPT_GROUPS = 'promptGroups',
-  /**
-   * Collection for Shared Links
-   */
   SHARED_LINKS = 'sharedLinks',
 }
 
-/**
- * Enum for time intervals
- */
 export enum Time {
   ONE_DAY = 86400000,
   TWELVE_HOURS = 43200000,
@@ -2233,549 +2049,188 @@ export enum Time {
   THIRTY_SECONDS = 30000,
 }
 
-/**
- * Enum for cache keys.
- */
 export enum CacheKeys {
-  /**
-   * Key for the config store namespace.
-   */
   CONFIG_STORE = 'CONFIG_STORE',
-  /**
-   * Key for the tool cache namespace (plugins, MCP tools, tool definitions).
-   */
   TOOL_CACHE = 'TOOL_CACHE',
-  /**
-   * Key for the roles cache.
-   */
   ROLES = 'ROLES',
-  /**
-   * Key for the title generation cache.
-   */
   GEN_TITLE = 'GEN_TITLE',
-  /**
-   * Key for the tools cache.
-   */
   TOOLS = 'TOOLS',
-  /**
-   * Key for the model config cache.
-   */
   MODELS_CONFIG = 'MODELS_CONFIG',
-  /**
-   * Key for the model queries cache.
-   */
   MODEL_QUERIES = 'MODEL_QUERIES',
-  /**
-   * Key for the default startup config cache.
-   */
   STARTUP_CONFIG = 'STARTUP_CONFIG',
-  /**
-   * Key for the default endpoint config cache.
-   */
   ENDPOINT_CONFIG = 'ENDPOINT_CONFIG',
-  /**
-   * Key for accessing the model token config cache.
-   */
   TOKEN_CONFIG = 'TOKEN_CONFIG',
-  /**
-   * Key for the app config namespace.
-   */
   APP_CONFIG = 'APP_CONFIG',
-  /**
-   * Key for accessing Abort Keys
-   */
   ABORT_KEYS = 'ABORT_KEYS',
-  /**
-   * Key for the bans cache.
-   */
   BANS = 'BANS',
-  /**
-   * Key for the encoded domains cache.
-   * Used by Azure OpenAI Assistants.
-   */
   ENCODED_DOMAINS = 'ENCODED_DOMAINS',
-  /**
-   * Key for the cached audio run Ids.
-   */
   AUDIO_RUNS = 'AUDIO_RUNS',
-  /**
-   * Key for in-progress messages.
-   */
   MESSAGES = 'MESSAGES',
-  /**
-   * Key for in-progress flow states.
-   */
   FLOWS = 'FLOWS',
-  /**
-   * Key for pending chat requests (concurrency check)
-   */
   PENDING_REQ = 'PENDING_REQ',
-  /**
-   * Key for s3 check intervals per user
-   */
   S3_EXPIRY_INTERVAL = 'S3_EXPIRY_INTERVAL',
-  /**
-   * key for open id exchanged tokens
-   */
   OPENID_EXCHANGED_TOKENS = 'OPENID_EXCHANGED_TOKENS',
-  /**
-   * Key for OpenID session.
-   */
   OPENID_SESSION = 'OPENID_SESSION',
-  /**
-   * Key for SAML session.
-   */
   SAML_SESSION = 'SAML_SESSION',
-  /**
-   * Key for admin panel OAuth exchange codes (one-time-use, short TTL).
-   */
   ADMIN_OAUTH_EXCHANGE = 'ADMIN_OAUTH_EXCHANGE',
 }
 
-/**
- * Enum for violation types, used to identify, log, and cache violations.
- */
 export enum ViolationTypes {
-  /**
-   * File Upload Violations (exceeding limit).
-   */
   FILE_UPLOAD_LIMIT = 'file_upload_limit',
-  /**
-   * Illegal Model Request (not available).
-   */
   ILLEGAL_MODEL_REQUEST = 'illegal_model_request',
-  /**
-   * Token Limit Violation.
-   */
   TOKEN_BALANCE = 'token_balance',
-  /**
-   * An issued ban.
-   */
   BAN = 'ban',
-  /**
-   * TTS Request Limit Violation.
-   */
   TTS_LIMIT = 'tts_limit',
-  /**
-   * STT Request Limit Violation.
-   */
   STT_LIMIT = 'stt_limit',
-  /**
-   * Reset Password Limit Violation.
-   */
   RESET_PASSWORD_LIMIT = 'reset_password_limit',
-  /**
-   * Verify Email Limit Violation.
-   */
   VERIFY_EMAIL_LIMIT = 'verify_email_limit',
-  /**
-   * Verify Conversation Access violation.
-   */
   CONVO_ACCESS = 'convo_access',
-  /**
-   * Tool Call Limit Violation.
-   */
   TOOL_CALL_LIMIT = 'tool_call_limit',
-  /**
-   * General violation (catch-all).
-   */
   GENERAL = 'general',
-  /**
-   * Login attempt violations.
-   */
   LOGINS = 'logins',
-  /**
-   * Concurrent request violations.
-   */
   CONCURRENT = 'concurrent',
-  /**
-   * Non-browser access violations.
-   */
   NON_BROWSER = 'non_browser',
-  /**
-   * Message limit violations.
-   */
   MESSAGE_LIMIT = 'message_limit',
-  /**
-   * Registration violations.
-   */
   REGISTRATIONS = 'registrations',
 }
 
-/**
- * Enum for error message types that are not "violations" as above, used to identify client-facing errors.
- */
 export enum ErrorTypes {
-  /**
-   * No User-provided Key.
-   */
   NO_USER_KEY = 'no_user_key',
-  /**
-   * Expired User-provided Key.
-   */
   EXPIRED_USER_KEY = 'expired_user_key',
-  /**
-   * Invalid User-provided Key.
-   */
   INVALID_USER_KEY = 'invalid_user_key',
-  /**
-   * No Base URL Provided.
-   */
   NO_BASE_URL = 'no_base_url',
-  /**
-   * Base URL targets a restricted or invalid address (SSRF protection).
-   */
   INVALID_BASE_URL = 'invalid_base_url',
-  /**
-   * Moderation error
-   */
   MODERATION = 'moderation',
-  /**
-   * Prompt exceeds max length
-   */
   INPUT_LENGTH = 'INPUT_LENGTH',
-  /**
-   * Invalid request error, API rejected request
-   */
   INVALID_REQUEST = 'invalid_request_error',
-  /**
-   * Invalid action request error, likely not on list of allowed domains
-   */
   INVALID_ACTION = 'invalid_action_error',
-  /**
-   * Invalid request error, API rejected request
-   */
   NO_SYSTEM_MESSAGES = 'no_system_messages',
-  /**
-   * Google provider returned an error
-   */
   GOOGLE_ERROR = 'google_error',
-  /**
-   * Google provider does not allow custom tools with built-in tools
-   */
   GOOGLE_TOOL_CONFLICT = 'google_tool_conflict',
-  /**
-   * Invalid Agent Provider (excluded by Admin)
-   */
   INVALID_AGENT_PROVIDER = 'invalid_agent_provider',
-  /**
-   * Missing model selection
-   */
   MISSING_MODEL = 'missing_model',
-  /**
-   * Models configuration not loaded
-   */
   MODELS_NOT_LOADED = 'models_not_loaded',
-  /**
-   * Endpoint models not loaded
-   */
   ENDPOINT_MODELS_NOT_LOADED = 'endpoint_models_not_loaded',
-  /**
-   * Generic Authentication failure
-   */
   AUTH_FAILED = 'auth_failed',
-  /**
-   * Model refused to respond (content policy violation)
-   */
   REFUSAL = 'refusal',
-  /**
-   * SSE stream 404 — job completed, expired, or was deleted before the subscriber connected
-   */
   STREAM_EXPIRED = 'stream_expired',
 }
 
-/**
- * Enum for authentication keys.
- */
 export enum AuthKeys {
-  /**
-   * Key for the Service Account to use Vertex AI.
-   */
   GOOGLE_SERVICE_KEY = 'GOOGLE_SERVICE_KEY',
-  /**
-   * API key to use Google Generative AI.
-   *
-   * Note: this is not for Environment Variables, but to access encrypted object values.
-   */
   GOOGLE_API_KEY = 'GOOGLE_API_KEY',
-  /**
-   * API key to use Anthropic.
-   *
-   * Note: this is not for Environment Variables, but to access encrypted object values.
-   */
   ANTHROPIC_API_KEY = 'ANTHROPIC_API_KEY',
 }
 
-/**
- * Enum for Image Detail Cost.
- *
- * **Low Res Fixed Cost:** `85`
- *
- * **High Res Calculation:**
- *
- * Number of `512px` Tiles * `170` + `85` (Additional Cost)
- */
 export enum ImageDetailCost {
-  /**
-   * Low resolution is a fixed value.
-   */
   LOW = 85,
-  /**
-   * High resolution Cost Per Tile
-   */
   HIGH = 170,
-  /**
-   * Additional Cost added to High Resolution Total Cost
-   */
   // eslint-disable-next-line @typescript-eslint/no-duplicate-enum-values
   ADDITIONAL = 85,
 }
 
-/**
- * Tab values for Settings Dialog
- */
 export enum SettingsTabValues {
-  /**
-   * Tab for General Settings
-   */
   GENERAL = 'general',
-  /**
-   * Tab for Chat Settings
-   */
   CHAT = 'chat',
-  /**
-   * Tab for Speech Settings
-   */
   SPEECH = 'speech',
-  /**
-   * Tab for Beta Features
-   */
   BETA = 'beta',
-  /**
-   * Tab for Data Controls
-   */
   DATA = 'data',
-  /**
-   * Tab for Balance Settings
-   */
   BALANCE = 'balance',
-  /**
-   * Tab for Account Settings
-   */
   ACCOUNT = 'account',
-  /**
-   * Chat input commands
-   */
   COMMANDS = 'commands',
-  /**
-   * Tab for Personalization Settings
-   */
   PERSONALIZATION = 'personalization',
-  /**
-   * Tab for About / Build Info
-   */
   ABOUT = 'about',
 }
 
 export enum STTProviders {
-  /**
-   * Provider for OpenAI STT
-   */
   OPENAI = 'openai',
-  /**
-   * Provider for Microsoft Azure STT
-   */
   AZURE_OPENAI = 'azureOpenAI',
 }
 
 export enum TTSProviders {
-  /**
-   * Provider for OpenAI TTS
-   */
   OPENAI = 'openai',
-  /**
-   * Provider for Microsoft Azure OpenAI TTS
-   */
   AZURE_OPENAI = 'azureOpenAI',
-  /**
-   * Provider for ElevenLabs TTS
-   */
   ELEVENLABS = 'elevenlabs',
-  /**
-   * Provider for LocalAI TTS
-   */
   LOCALAI = 'localai',
 }
 
-/** Enum for app-wide constants */
 export enum Constants {
-  /**
-   * Key for the app's version. The placeholder `__LIBRECHAT_VERSION__` is
-   * swapped in by `@rollup/plugin-replace` during `npm run build:data-provider`
-   * using the value of the root `package.json`'s `version` field. Consumers
-   * always import this via the built dist bundle (see `main` field in
-   * `packages/data-provider/package.json`), so production and UI code get the
-   * substituted value. Only tests that import the TypeScript source directly
-   * would observe the raw placeholder.
-   */
   VERSION = '__LIBRECHAT_VERSION__',
-  /** Key for the Custom Config's version (librechat.yaml). */
   CONFIG_VERSION = '1.3.13',
-  /** Standard value for the first message's `parentMessageId` value, to indicate no parent exists. */
   NO_PARENT = '00000000-0000-0000-0000-000000000000',
-  /** Standard value to use whatever the submission prelim. `responseMessageId` is */
   USE_PRELIM_RESPONSE_MESSAGE_ID = 'USE_PRELIM_RESPONSE_MESSAGE_ID',
-  /** Standard value for the initial conversationId before a request is sent */
   NEW_CONVO = 'new',
-  /** Standard value for the temporary conversationId after a request is sent and before the server responds */
   PENDING_CONVO = 'PENDING',
-  /** Standard value for the conversationId used for search queries */
   SEARCH = 'search',
-  /** Fixed, encoded domain length for Azure OpenAI Assistants Function name parsing. */
   ENCODED_DOMAIN_LENGTH = 10,
-  /** Identifier for using current_model in multi-model requests. */
   CURRENT_MODEL = 'current_model',
-  /** Common divider for text values */
   COMMON_DIVIDER = '__',
-  /** Max length for commands */
   COMMANDS_MAX_LENGTH = 56,
-  /** Default Stream Rate (ms) */
   DEFAULT_STREAM_RATE = 1,
-  /** Saved Tag */
   SAVED_TAG = 'Saved',
-  /** Max number of Conversation starters for Agents/Assistants */
   MAX_CONVO_STARTERS = 4,
-  /** Delimiter for MCP tools */
   mcp_delimiter = '_mcp_',
-  /** Prefix for MCP plugins */
   mcp_prefix = 'mcp_',
-  /** Unique value to indicate all MCP servers. For backend use only. */
   mcp_all = 'sys__all__sys',
-  /** Unique value to indicate clearing MCP servers from UI state. For frontend use only. */
   mcp_clear = 'sys__clear__sys',
-  /** Key suffix for non-spec user default tool storage */
   spec_defaults_key = '__defaults__',
-  /**
-   * Unique value to indicate the MCP tool was added to an agent.
-   * This helps inform the UI if the mcp server was previously added.
-   * */
   mcp_server = 'sys__server__sys',
-  /**
-   * Handoff Tool Name Prefix
-   */
   LC_TRANSFER_TO_ = 'lc_transfer_to_',
-  /** Placeholder Agent ID for Ephemeral Agents */
   EPHEMERAL_AGENT_ID = 'ephemeral',
-  /** Programmatic Tool Calling tool name */
   PROGRAMMATIC_TOOL_CALLING = 'run_tools_with_code',
-  /** Bash Programmatic Tool Calling tool name */
   BASH_PROGRAMMATIC_TOOL_CALLING = 'run_tools_with_bash',
-  /** Subagent spawn tool name (must match `@librechat/agents` `Constants.SUBAGENT`). */
   SUBAGENT = 'subagent',
 }
 
-/** Maximum explicit subagent hops allowed from any root agent at runtime. */
 export const MAX_SUBAGENT_DEPTH = 5;
 
-/** Maximum unique explicit subagent targets that may be loaded at runtime. */
 export const MAX_SUBAGENT_GRAPH_NODES = 50;
 
-/** Maximum expanded SubagentConfig entries embedded into one run request. */
 export const MAX_SUBAGENT_RUN_CONFIGS = 100;
 
 export enum LocalStorageKeys {
-  /** Key for the admin defined App Title */
   APP_TITLE = 'appTitle',
-  /** Key for the last conversation setup. */
   LAST_CONVO_SETUP = 'lastConversationSetup',
-  /** Key for the last selected model. */
   LAST_MODEL = 'lastSelectedModel',
-  /** Key for the last selected tools. */
   LAST_TOOLS = 'lastSelectedTools',
-  /** Key for the last selected spec by name*/
   LAST_SPEC = 'lastSelectedSpec',
-  /** Key for temporary files to delete */
   FILES_TO_DELETE = 'filesToDelete',
-  /** Prefix key for the last selected assistant ID by index */
   ASST_ID_PREFIX = 'assistant_id__',
-  /** Prefix key for the last selected agent ID by index */
   AGENT_ID_PREFIX = 'agent_id__',
-  /** Key for the last selected fork setting */
   FORK_SETTING = 'forkSetting',
-  /** Key for remembering the last selected option, instead of manually selecting */
   REMEMBER_FORK_OPTION = 'rememberDefaultFork',
-  /** Key for remembering the split at target fork option modifier */
   FORK_SPLIT_AT_TARGET = 'splitAtTarget',
-  /** Key for saving text drafts */
   TEXT_DRAFT = 'textDraft_',
-  /** Key for saving file drafts */
   FILES_DRAFT = 'filesDraft_',
-  /** Key for last Selected Prompt Category */
   LAST_PROMPT_CATEGORY = 'lastPromptCategory',
-  /** Key for rendering User Messages as Markdown */
   ENABLE_USER_MSG_MARKDOWN = 'enableUserMsgMarkdown',
-  /** Key for auto-expanding tool call details */
   AUTO_EXPAND_TOOLS = 'autoExpandTools',
-  /** Last selected MCP values per conversation ID */
   LAST_MCP_ = 'LAST_MCP_',
-  /** Last checked toggle for Code Interpreter API per conversation ID */
   LAST_CODE_TOGGLE_ = 'LAST_CODE_TOGGLE_',
-  /** Last checked toggle for Web Search per conversation ID */
   LAST_WEB_SEARCH_TOGGLE_ = 'LAST_WEB_SEARCH_TOGGLE_',
-  /** Last checked toggle for File Search per conversation ID */
   LAST_FILE_SEARCH_TOGGLE_ = 'LAST_FILE_SEARCH_TOGGLE_',
-  /** Last checked toggle for Artifacts per conversation ID */
   LAST_ARTIFACTS_TOGGLE_ = 'LAST_ARTIFACTS_TOGGLE_',
-  /** Last checked toggle for Skills per conversation ID */
   LAST_SKILLS_TOGGLE_ = 'LAST_SKILLS_TOGGLE_',
-  /** Last checked toggle for Memory per conversation ID */
   LAST_MEMORY_TOGGLE_ = 'LAST_MEMORY_TOGGLE_',
-  /** Key for the last selected agent provider */
   LAST_AGENT_PROVIDER = 'lastAgentProvider',
-  /** Key for the last selected agent model */
   LAST_AGENT_MODEL = 'lastAgentModel',
-  /** Pin state for MCP tools per conversation ID */
   PIN_MCP_ = 'PIN_MCP_',
-  /** Pin state for Web Search per conversation ID */
   PIN_WEB_SEARCH_ = 'PIN_WEB_SEARCH_',
-  /** Pin state for Code Interpreter per conversation ID */
   PIN_CODE_INTERPRETER_ = 'PIN_CODE_INTERPRETER_',
 }
 
 export enum ForkOptions {
-  /** Key for direct path option */
   DIRECT_PATH = 'directPath',
-  /** Key for including branches */
   INCLUDE_BRANCHES = 'includeBranches',
-  /** Key for target level fork (default) */
   TARGET_LEVEL = 'targetLevel',
-  /** Default option */
   DEFAULT = 'default',
 }
 
-/**
- * Enum for Cohere related constants
- */
 export enum CohereConstants {
-  /**
-   * Cohere API Endpoint, for special handling
-   */
   API_URL = 'https://api.cohere.ai/v1',
-  /**
-   * Role for "USER" messages
-   */
   ROLE_USER = 'USER',
-  /**
-   * Role for "SYSTEM" messages
-   */
   ROLE_SYSTEM = 'SYSTEM',
-  /**
-   * Role for "CHATBOT" messages
-   */
   ROLE_CHATBOT = 'CHATBOT',
-  /**
-   * Title message as required by Cohere
-   */
   TITLE_MESSAGE = 'TITLE:',
 }
 
@@ -2802,10 +2257,6 @@ export const specialVariables = {
 
 export type TSpecialVarLabel = `com_ui_special_var_${keyof typeof specialVariables}`;
 
-/**
- * Retrieves a specific field from the endpoints configuration for a given endpoint key.
- * Does not infer or default any endpoint type when absent.
- */
 export function getEndpointField<
   K extends TConfig[keyof TConfig] extends never ? never : keyof TConfig,
 >(
@@ -2823,14 +2274,6 @@ export function getEndpointField<
   return config[property];
 }
 
-/**
- * Resolves the effective endpoint type:
- * - Non-agents endpoint: config.type || endpoint
- * - Agents + provider: config[provider].type || provider
- * - Agents, no provider: EModelEndpoint.agents
- *
- * Returns `undefined` when endpoint is null/undefined.
- */
 export function resolveEndpointType(
   endpointsConfig: TEndpointsConfig | undefined | null,
   endpoint: string | null | undefined,
@@ -2855,7 +2298,6 @@ export function resolveEndpointType(
   return EModelEndpoint.agents;
 }
 
-/** Resolves the `defaultParamsEndpoint` for a given endpoint from its custom params config */
 export function getDefaultParamsEndpoint(
   endpointsConfig: TEndpointsConfig | undefined | null,
   endpoint: string | null | undefined,
